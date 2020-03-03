@@ -28,14 +28,6 @@
 #define WAITING_FLUSH       0x080
 #define CLOSED              0x001
 #define ZEROS               0x000
-// #define WAITING_INPUT       0x10
-// #define WAITING_ACK         0x20
-// #define WAITING_FLUSH       0x40
-// #define FINISHED            0x80
-// #define GOT_FIN             0x01
-// #define SENT_FIN            0x02
-// #define GOT_FIN_ACK         0x04
-// #define WAITING_RESP        0x08
 /**
  * Connection state.
  *
@@ -231,14 +223,14 @@ void ctcp_output(ctcp_state_t *state) {
 
 void ctcp_timer() {
   /* FIXME */
-    //   ctcp_state_t *state = state_list;
+    ctcp_state_t *state = state_list;
 
-    //  go through every open reliable connection and retransmit packets as needed  
-    // while(state)
-    // {
-    //     if (handle_retransmission(state) == 0)
-    //         state = state->next;
-    // }
+    //go through every open reliable connection and retransmit packets as needed  
+    while(state)
+    {
+        if (handle_retransmission(state) == 0)
+            state = state->next;
+    }
 }
 int is_segment_corrupted(ctcp_segment_t *segment,size_t received_length)
 {
@@ -287,8 +279,6 @@ void process_data_segment(ctcp_state_t *state, ctcp_segment_t *segment)
   print_hdr_ctcp(segment);
   uint16_t seq_len=ntohs(segment->len);
   uint32_t seqno=ntohl(segment->seqno);
-  uint16_t cksum=ntohs(segment->cksum);
-  fprintf(stdout, "%d,\n",cksum);
   if (seqno<state->ackno)  //unwanted segment
   {
     create_segment_and_send(state,NULL,0,ACK); //resend ACK
@@ -311,10 +301,12 @@ void process_data_segment(ctcp_state_t *state, ctcp_segment_t *segment)
 }
 void process_ack_segment(ctcp_state_t *state,ctcp_segment_t *segment)
 {
-  if(state->status & WAITING_INPUT)
+  if(state->status & WAITING_ACK)
   {
     uint32_t recv_ack=ntohl(segment->ackno);
-    fprintf(stdout, "%d\n",recv_ack);
+    fprintf(stdout, "%d,,\n",recv_ack);
+    state->status &=~WAITING_ACK;
+    state->status |= WAITING_INPUT;
     return;
   }
   if(state->status & FIN_WAIT_1)
