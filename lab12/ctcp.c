@@ -154,7 +154,7 @@ void ctcp_read(ctcp_state_t *state) {
     /* If read EOF */
     else if (byte_read==-1)
     {
-      state->status &= ZEROS;
+      state->status &= ~WAITING_INPUT;
       state->status |= FIN_WAIT_1;
       state->numSentByte=0;
       create_segment_and_send(state,NULL,0,FIN);
@@ -167,7 +167,7 @@ void ctcp_read(ctcp_state_t *state) {
       state->seqno+=byte_read;
       if(state->numSentByte==state->sent_window)
       {
-        state->status &= ZEROS;
+        state->status &= ~WAITING_INPUT;
         state->numSentByte=0;
       }
       state->status |= WAITING_ACK;
@@ -223,7 +223,7 @@ void ctcp_output(ctcp_state_t *state) {
     state->numFlushedBytes += bytesWritten;
 
     if(state->numFlushedBytes == state->numRecvByte) {
-        state->status &= ZEROS;
+        state->status &= ~WAITING_FLUSH;
         state->numFlushedBytes = 0;
     }
     return;
