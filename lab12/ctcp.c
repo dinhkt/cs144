@@ -71,6 +71,25 @@ void process_data_segment(ctcp_state_t *state,ctcp_segment_t *segment);
 void process_ack_segment(ctcp_state_t *state,ctcp_segment_t *segment);
 void process_fin_segment(ctcp_state_t *state,ctcp_segment_t *segment);
 int handle_retransmission(ctcp_state_t *state);
+void print_status(ctcp_state_t *state)
+{
+  if(state->status & WAITING_INPUT)
+    fprintf(stdout, "waiting input\n");
+  else if(state->status & WAITING_ACK)
+    fprintf(stdout, "waiting ack\n" );
+  else if(state->status & FIN_WAIT_1)
+    fprintf(stdout, "fin wait 1\n" );
+  else if(state->status & FIN_WAIT_2)
+    fprintf(stdout, "fin wait 2\n" );
+  else if(state->status & TIME_WAIT)
+    fprintf(stdout, "time wait\n" );
+  else if(state->status & CLOSE_WAIT)
+    fprintf(stdout, "close wait\n" );
+  else if(state->status & LAST_ACK)
+    fprintf(stdout, "last ack\n" );
+  else if(state->status & CLOSED)
+    fprintf(stdout, "closed\n" );
+}
 /**
  * Linked list of connection states. Go through this in ctcp_timer() to
  * resubmit segments and tear down connections.
@@ -133,6 +152,7 @@ void ctcp_destroy(ctcp_state_t *state) {
 
 void ctcp_read(ctcp_state_t *state) {
   /* FIXME */
+  //fprintf(stdout, "send\n" );
   if (state->status & WAITING_INPUT)
   {
     int bytesLeft = state->sent_window - state->numSentByte;
@@ -147,11 +167,13 @@ void ctcp_read(ctcp_state_t *state) {
       state->status &= ~WAITING_INPUT;
       state->status |= FIN_WAIT_1;
       state->numSentByte=0;
+      fprintf(stdout, "close connect\n" );
       create_segment_and_send(state,NULL,0,FIN);
+      print_status(state);
     }
     else 
     {
-      fprintf(stdout, "send data\n" );
+      //fprintf(stdout, "send data\n" );
       create_segment_and_send(state,(char *)state->sent_buffer,byte_read,ACK);
       state->numSentByte+=byte_read;
       state->seqno+=byte_read;
@@ -171,6 +193,7 @@ void ctcp_receive(ctcp_state_t *state, ctcp_segment_t *segment, size_t len) {
     free(segment);
     return;
   }
+  //fprintf(stdout, "receive\n" );
   uint32_t flags = segment->flags;
   /* Received data segment */
   if (ntohs(segment->len) > sizeof(ctcp_segment_t)) {
@@ -241,7 +264,7 @@ int is_segment_corrupted(ctcp_segment_t *segment,size_t received_length)
   uint16_t segmentChecksum = segment->cksum;
   memset (&(segment->cksum), 0, sizeof(segment->cksum));
   uint16_t computedChecksum = cksum(segment, segmentLength);
-
+  segment->cksum=segmentChecksum;
   return segmentChecksum != computedChecksum;
 }
 void create_segment_and_send(ctcp_state_t *state,char *buffer, uint16_t buffer_len, uint32_t flags)
@@ -267,6 +290,7 @@ void create_segment_and_send(ctcp_state_t *state,char *buffer, uint16_t buffer_l
     ll_add(state->segments,smt);
   }
   smt->cksum=cksum(smt,segment_len);
+  fprintf(stdout, "send\n");
   conn_send(state->conn,smt, segment_len);
   print_hdr_ctcp(smt);
   return ;
@@ -274,7 +298,7 @@ void create_segment_and_send(ctcp_state_t *state,char *buffer, uint16_t buffer_l
 void process_data_segment(ctcp_state_t *state, ctcp_segment_t *segment)
 {
   //check whether ackno of the segment correct
-  print_hdr_ctcp(segment);
+  //print_hdr_ctcp(segment);
   uint16_t seq_len=ntohs(segment->len);
   uint32_t seqno=ntohl(segment->seqno);
   if (seqno<state->ackno)  //unwanted segment
@@ -288,9 +312,9 @@ void process_data_segment(ctcp_state_t *state, ctcp_segment_t *segment)
     state->status |= WAITING_FLUSH;
     state->numRecvByte=seq_len-sizeof(ctcp_segment_t);
     state->ackno=seqno+state->numRecvByte;
-    fprintf(stdout, "%d\n",state->ackno);
+    //fprintf(stdout, "%d\n",state->ackno);
     memcpy(state->recv_buffer,segment->data,state->numRecvByte);
-    fprintf(stdout, "send back ack \n" );
+    fprintf(stdout, "receive data ,send back ack \n" );
     create_segment_and_send(state,NULL,0,ACK);
     ctcp_output(state);
     //conn_output(state->conn,(char *)state->recv_buffer,state->numRecvByte);
@@ -298,6 +322,8 @@ void process_data_segment(ctcp_state_t *state, ctcp_segment_t *segment)
 }
 void process_ack_segment(ctcp_state_t *state,ctcp_segment_t *segment)
 {
+  fprintf(stdout, "receive ack\n" );
+  print_hdr_ctcp(segment);
   if(state->status & WAITING_ACK)
   {
     //we use stop and wait so the head of the list is the current segment
@@ -310,11 +336,13 @@ void process_ack_segment(ctcp_state_t *state,ctcp_segment_t *segment)
   {
     state->status &= ~FIN_WAIT_1;
     state->status |= FIN_WAIT_2;
+    print_status(state);
   }
   if(state->status & LAST_ACK)
   {
     state->status &= ~LAST_ACK;
     state->status |= CLOSED;
+    print_status(state);
   }
   print_hdr_ctcp(segment);
   return;
@@ -322,23 +350,29 @@ void process_ack_segment(ctcp_state_t *state,ctcp_segment_t *segment)
 void process_fin_segment( ctcp_state_t *state , ctcp_segment_t *segment)
 {
   //passive close
+  fprintf(stdout, "receive fin\n" );
   if(state->status & WAITING_INPUT)
   {
     state->status &= ~WAITING_INPUT;
     state->status |= CLOSE_WAIT;
+    state->ackno=ntohl(segment->seqno)+1;
     create_segment_and_send(state,NULL,0,ACK);
+    print_status(state);
     sleep(1);
     create_segment_and_send(state,NULL,0,FIN);
     state->status &= ~CLOSE_WAIT;
     state->status |= LAST_ACK; 
+    print_status(state);
     return;
   }
   if(state->status & FIN_WAIT_2)
   {
     state->status &= ~FIN_WAIT_2;
     state->status |= TIME_WAIT;
+    state->ackno=ntohl(segment->seqno)+1;
     create_segment_and_send(state,NULL,0,ACK);
-    sleep(1);
+    print_status(state);
+    usleep(state->timeout*1000);
     ctcp_destroy(state);
   }
 }
