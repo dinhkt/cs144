@@ -31,7 +31,6 @@
 #define ZEROS               0x000
 
 
-#define SLIDING_WINDOW_SIZE 4
 /**
  * Connection state.
  *
@@ -216,10 +215,6 @@ void ctcp_receive(ctcp_state_t *state, ctcp_segment_t *segment, size_t len) {
   }
   free(segment);
 
-  //state CLOSED 
-  // if (state->status & TIME_WAIT || state->status ) {
-  //     ctcp_destroy(state);
-  // }
 
   return;
 }
@@ -346,10 +341,8 @@ void process_ack_segment(ctcp_state_t *state,ctcp_segment_t *segment)
       print_hdr_ctcp(curr_seg);
       seg_seqno=ntohl(curr_seg->seqno);
       seg_data_len=ntohs(curr_seg->len)-sizeof(ctcp_segment_t);
-      fprintf(stdout, "%d,%d,%d\n",ackno,seg_seqno,seg_data_len);
       if(ackno==seg_seqno+seg_data_len)
       {
-        fprintf(stdout, "correct node\n");
         ll_remove(list,node);
         state->status &=~WAITING_ACK;
         state->status |= WAITING_INPUT;
