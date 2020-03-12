@@ -238,6 +238,7 @@ def read_segments_from(host):
       segment.ackno = int(details[6])
       segment.length = int(details[7])
       segment.flags = details[8].split(" ")
+      #print (segment.flags)
       segment.window = int(details[9])
       segment.checksum = details[10]
       segment.string = ",".join(segment_log[3:-3].split("\t"))
@@ -538,7 +539,7 @@ def fin_sent():
   """
   Checks to see that a FIN segment is sent when an EOF is read from STDIN.
   """
-  test_str = "f1N s3nt\n"
+  test_str = "f s3nt\n"
   client_port, server_port = choose_ports()
   server = start_server(port=server_port)
   client = start_client(server_port=server_port, port=client_port)
@@ -548,11 +549,9 @@ def fin_sent():
   if not read_segments_from(client):
     return False
   time.sleep(1)
-
   # Write an EOF character.
   write_to(client, '\x1a')
   client.stdin.close()
-
   # Check to see that segment sent from client is a FIN.
   segments = read_segments_from(client)
   if not segments:
@@ -581,9 +580,9 @@ def connection_teardown():
   server.stdin.close()
   time.sleep(TEST_TIMEOUT)
 
+  #print ( DEBUG_TEARDOWN in read_debug_messages_from(client) and DEBUG_TEARDOWN in read_debug_messages_from(server))
   return (
-    DEBUG_TEARDOWN in read_debug_messages_from(client) and
-    DEBUG_TEARDOWN in read_debug_messages_from(server)
+    DEBUG_TEARDOWN in read_debug_messages_from(client) and  DEBUG_TEARDOWN in read_debug_messages_from(server)
   )
 
 
@@ -604,7 +603,6 @@ def larger_windows():
   server = start_server(port=server_port, reference=True, flags=["-w", str(4)])
   client = start_client(server_port=server_port, port=client_port,
                         flags=["-w", str(4)])
-
 
   # Stop the server from processing anything.
   write_to(client, large_strs[0])
