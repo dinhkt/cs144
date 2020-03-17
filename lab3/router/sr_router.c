@@ -22,6 +22,9 @@
 #include "sr_arpcache.h"
 #include "sr_utils.h"
 
+
+# define LOG_MSG(...) fprintf(stderr, __VA_ARGS__)
+
 /*---------------------------------------------------------------------
  * Method: sr_init(void)
  * Scope:  Global
@@ -77,8 +80,33 @@ void sr_handlepacket(struct sr_instance* sr,
   assert(interface);
 
   printf("*** -> Received packet of length %d \n",len);
-
+  print_hdrs(packet,length);
   /* fill in code here */
+  // if(len<sizeof(sr_ethernet_hdr_t))
+  // {
+  //   LOG_MSG("Invalid packet: not long enough");
+  //   return;
+  // }
+  // sr_ethernet_hdr_t *curr_eth_frame=(sr_ethernet_hdr_t *)packet;
+  // uint16_t eth_type = curr_eth_frame->ether_type;
+  // if(eth_type==ethertype_arp)
+  // {
+  //   process_arp_packet(sr,(void*)(packet+sizeof(sr_ethernet_hdr_t)),len-sizeof(sr_ethernet_hdr_t));
+  // }
+  // else if (eth_type==ethertype_ip)
+  // {
+  //   process_ip_packet(sr,(void*)(packet+ sizeof(sr_ethernet_hdr_t)),len-sizeof(sr_ethernet_hdr_t));
+  // }
+  // else 
+  //   return;
 
 }/* end sr_ForwardPacket */
 
+// void process_ip_packet(sr_instance  *sr,void *ip_datagram, unsigned int len)
+// {
+//   sr_ip_hdr *curr_ip_hdr=(sr_ip_hdr*)(ip_datagram);
+//   if(cksum(curr_ip_hdr)==0) 
+//     return;
+
+// }
+// uint16_t cksum()
