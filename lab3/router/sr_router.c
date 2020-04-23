@@ -33,6 +33,9 @@
 void reply_arp(struct sr_instance *sr, void *arp_packet,unsigned int len,struct sr_if *);
 void process_ip_packet(struct sr_instance  *sr,void *ip_packet, unsigned int len);
 void process_arp_packet(struct sr_instance *sr,void *arp_packet, unsigned int len);
+int correct_checksum(sr_ip_hdr_t * curr_ip_hdr);
+uint32_t LPM_lookup(struct sr_instance * sr, uint32_t ip_dest);
+struct sr_rt * LPM_lookup(struct sr_instance * sr, uint32_t ip_dest);
 void sr_init(struct sr_instance* sr)
 {
     /* REQUIRES */
@@ -106,6 +109,17 @@ void sr_handlepacket(struct sr_instance* sr,
 }/* end sr_ForwardPacket */
 void process_ip_packet(struct sr_instance  *sr,void *ip_packet, unsigned int len)
 {
+  sr_ip_hdr_t *curr_ip_hdr =(sr_ip_hdr_t *)(ip_packet+sizeof(sr_ethernet_hdr_t));
+  if (correct_checksum(curr_ip_hdr))
+  {
+    uint32_t ip_dest=curr_ip_hdr->ip_dst;
+    /*look up entry by longest prefix match*/
+    struct sr_rt * entry_chosen=LPM_lookup(sr,ip_dest);
+    /*decrease TTL by 1 */
+    curr_ip_hdr->ip_ttl-=1;
+
+    
+  }
   return;
 }
 void process_arp_packet(struct sr_instance *sr,void *arp_packet, unsigned int len)
@@ -161,4 +175,41 @@ void reply_arp(struct sr_instance *sr, void *arp_packet,unsigned int len,struct 
   int ret_val= sr_send_packet(sr,(uint8_t *)arp_frame_to_send,len,curr_sr_if->name);
   if(ret_val<0)
     fprintf(stderr, "Failed to send\n");
+}
+void 
+int correct_checksum(sr_ip_hdr_t * curr_ip_hdr)
+{
+  uint16_t cksum_val= curr_ip_hdr->ip_sum;
+  curr_ip_hdr->ip_sum=0;
+  printf("%d\n",curr_ip_hdr->ip_sum );
+  uint16_t *arr=malloc(sizeof(sr_ip_hdr_t));
+  memcpy(arr,curr_ip_hdr,sizeof(sr_ip_hdr_t));
+  int i;
+  uint16_t compute_sum=0;
+  for (i=0;i<10;i++)
+  {
+    compute_sum|=ntohs(arr[i]);
+  }
+  compute_sum|=cksum_val;
+  curr_ip_hdr->ip_sum=cksum_val;
+  if (compute_sum==0xffff) 
+    return 1;
+  return 0;
+}
+struct sr_rt * LPM_lookup(struct sr_instance * sr, uint32_t ip_dest)
+{
+  struct sr_rt *entry_chosen = sr->routing_table;
+  uint16_t xor_val,num=0;
+  struct sr_rt *curr_entry = sr->routing_table;
+  while(curr_entry!= NULL)
+  {
+    xor_val=ip_dest ^ sr->routing_table->dest;
+    if(xor_val>num)
+    {
+      num=xor_val;
+      entry_chosen=curr_entry;
+    }
+    curr_entry=curr_entry->next;
+  }
+  return entry_chosen;
 }
