@@ -36,7 +36,7 @@ void process_arp_packet(struct sr_instance *sr,void *arp_packet, unsigned int le
 int correct_checksum(sr_ip_hdr_t * curr_ip_hdr);
 struct sr_rt * LPM_lookup(struct sr_instance * sr, uint32_t ip_dest);
 void send_arp_request(struct sr_instance* sr,struct sr_if *if_to_send, uint32_t ip_dest);
-void forward_packet(struct sr_if *if_to_send, void* ip_packet,struct sr_arpentry *match_arpcache);
+void forward_packet(struct sr_instance* sr,struct sr_if *if_to_send, void* ip_packet,struct sr_arpentry *match_arpcache,unsigned int len);
 void sr_init(struct sr_instance* sr)
 {
     /* REQUIRES */
@@ -126,12 +126,14 @@ void process_ip_packet(struct sr_instance  *sr,void *ip_packet, unsigned int len
     }
     /*decrease TTL by 1 */
     curr_ip_hdr->ip_ttl-=1;
+    /*recalculate checksum*/
+    curr_ip_hdr->ip_sum+=1;
     /*lookup in arp cache*/
     struct sr_arpentry *match_arpcache=sr_arpcache_lookup(&sr->cache,ip_dest);
     if(match_arpcache ==NULL)
       send_arp_request(sr,if_to_send,ip_dest);
     else 
-      forward_packet(if_to_send,ip_packet,match_arpcache);
+      forward_packet(sr,if_to_send,ip_packet,match_arpcache,len);
   }
   else
     printf("corrupt\n");
@@ -140,7 +142,7 @@ void process_ip_packet(struct sr_instance  *sr,void *ip_packet, unsigned int len
 void process_arp_packet(struct sr_instance *sr,void *arp_packet, unsigned int len)
 {
   sr_arp_hdr_t *curr_arp_hdr = (sr_arp_hdr_t *)(arp_packet+sizeof(sr_ethernet_hdr_t));
-  if(curr_arp_hdr->ar_op==1)
+  if(curr_arp_hdr->ar_op==ntohs(1))
   {
     struct sr_if *if_frame_come_from = sr->if_list;
     while(if_frame_come_from!=NULL)
@@ -161,7 +163,6 @@ void process_arp_packet(struct sr_instance *sr,void *arp_packet, unsigned int le
   else
   {
     sr_arpcache_insert(&sr->cache,curr_arp_hdr->ar_sha,curr_arp_hdr->ar_sip);
-    sr_arpcache_dump(&sr->cache);
   }
 }
 void send_arp_request(struct sr_instance* sr,struct sr_if *if_to_send, uint32_t ip_dest)
@@ -197,8 +198,9 @@ void send_arp_request(struct sr_instance* sr,struct sr_if *if_to_send, uint32_t 
   print_hdrs(arp_frame_to_send,sizeof(sr_ethernet_hdr_t)+sizeof(sr_arp_hdr_t));
 
   int ret_val= sr_send_packet(sr,(uint8_t *)arp_frame_to_send,98,if_to_send->name);
-  if(ret_val<0)
-    fprintf(stderr, "Failed to send\n");
+  free(arp_frame_to_send);
+  free(eth_header_to_send);
+  free(arp_header_to_send);
 }
 void reply_arp(struct sr_instance *sr, void *arp_packet,unsigned int len,struct sr_if *curr_sr_if)
 {
@@ -232,8 +234,9 @@ void reply_arp(struct sr_instance *sr, void *arp_packet,unsigned int len,struct 
   print_hdrs(arp_frame_to_send,sizeof(sr_ethernet_hdr_t)+sizeof(sr_arp_hdr_t));
 
   int ret_val= sr_send_packet(sr,(uint8_t *)arp_frame_to_send,len,curr_sr_if->name);
-  if(ret_val<0)
-    fprintf(stderr, "Failed to send\n");
+  free(arp_frame_to_send);
+  free(eth_header_to_send);
+  free(arp_header_to_send);
 } 
 int correct_checksum(sr_ip_hdr_t * curr_ip_hdr)
 {
@@ -245,6 +248,7 @@ int correct_checksum(sr_ip_hdr_t * curr_ip_hdr)
   {
     compute_sum+=ntohs(arr[i]);
   }
+  free(arr);
   uint16_t carry=compute_sum>>16;
   if ((uint16_t)compute_sum+carry==0xffff) 
     return 1;
@@ -268,8 +272,16 @@ struct sr_rt * LPM_lookup(struct sr_instance * sr, uint32_t ip_dest)
   }
   return chosen_entry;
 }
-void forward_packet(struct sr_if *if_to_send, void* ip_packet,struct sr_arpentry *match_arpcache)
+void forward_packet(struct sr_instance* sr,struct sr_if *if_to_send, void* ip_packet,struct sr_arpentry *match_arpcache,unsigned int len)
 {
   printf("checked\n");
-  
+  sr_ethernet_hdr_t *curr_eth_frame=(sr_ethernet_hdr_t *)ip_packet;
+  memset(curr_eth_frame->ether_dhost,0,ETHER_ADDR_LEN);
+  memcpy(curr_eth_frame->ether_dhost,match_arpcache->mac,ETHER_ADDR_LEN);
+  memset(curr_eth_frame->ether_shost,0,ETHER_ADDR_LEN);
+  memcpy(curr_eth_frame->ether_shost,if_to_send->addr,ETHER_ADDR_LEN);
+  print_hdrs(ip_packet,len);
+  int ret_val= sr_send_packet(sr,(uint8_t *)ip_packet,len,if_to_send->name);
+  if(ret_val<0)
+  fprintf(stderr, "Failed to send\n");
 }
