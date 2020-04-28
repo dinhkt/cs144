@@ -30,13 +30,18 @@
  * Initialize the routing subsystem
  *
  *---------------------------------------------------------------------*/
-void reply_arp(struct sr_instance *sr, void *arp_packet,unsigned int len,struct sr_if *);
+void reply_arp(struct sr_instance *sr, void *arp_packet,unsigned int len,struct sr_if *curr_sr_if);
 void process_ip_packet(struct sr_instance  *sr,void *ip_packet, unsigned int len);
 void process_arp_packet(struct sr_instance *sr,void *arp_packet, unsigned int len);
 int correct_checksum(sr_ip_hdr_t * curr_ip_hdr);
 struct sr_rt * LPM_lookup(struct sr_instance * sr, uint32_t ip_dest);
 void send_arp_request(struct sr_instance* sr,struct sr_if *if_to_send, uint32_t ip_dest);
-void forward_packet(struct sr_instance* sr,struct sr_if *if_to_send, void* ip_packet,struct sr_arpentry *match_arpcache,unsigned int len);
+void forward_packet(struct sr_instance* sr,struct sr_if *if_to_send, void* ip_packet,unsigned char *mac_addr,unsigned int len);
+/*if_to_send: interface corresponding to the ip that arp_req need to send*/
+void handle_arpreq(struct sr_instance *sr,struct sr_arpreq *arp_req);
+/* */
+void send_await_packet(struct sr_instance *sr,struct sr_arpreq *req,unsigned char *mac,unsigned int len);
+void create_and_send_icmp_packet(struct sr_instance *sr, struct sr_if * if_to_send,unsigned char *dmac,uint32_t ip_dst,uint8_t type,uint8_t code);
 void sr_init(struct sr_instance* sr)
 {
     /* REQUIRES */
@@ -103,6 +108,7 @@ void sr_handlepacket(struct sr_instance* sr,
   {
     printf("receive ip packet");
     process_ip_packet(sr,(void*)packet,len);
+
   }
   else 
     return;
@@ -110,30 +116,57 @@ void sr_handlepacket(struct sr_instance* sr,
 }/* end sr_ForwardPacket */
 void process_ip_packet(struct sr_instance  *sr,void *ip_packet, unsigned int len)
 {
+  sr_ethernet_hdr_t *curr_eth_hdr=(sr_ethernet_hdr_t*)ip_packet;
   sr_ip_hdr_t *curr_ip_hdr =(sr_ip_hdr_t *)(ip_packet+sizeof(sr_ethernet_hdr_t));
   if (correct_checksum(curr_ip_hdr))
   {
     uint32_t ip_dest=curr_ip_hdr->ip_dst;
-    /*look up entry by longest prefix match*/
-    struct sr_rt * chosen_entry=LPM_lookup(sr,ip_dest);
-    printf("\n%s\n",chosen_entry->interface);
-    struct sr_if * if_to_send=sr->if_list;
-    while(if_to_send!=NULL)
+    uint8_t selfcheck=0;
+    struct sr_if *curr_if=sr->if_list;
+    while(curr_if!=NULL)
     {
-      if (strcmp(if_to_send->name,chosen_entry->interface)==0)
+      if(ip_dest==curr_if->ip)
+      {
+        selfcheck=1;
         break;
-      if_to_send=if_to_send->next;
+      }
+      curr_if=curr_if->next;
     }
-    /*decrease TTL by 1 */
-    curr_ip_hdr->ip_ttl-=1;
-    /*recalculate checksum*/
-    curr_ip_hdr->ip_sum+=1;
-    /*lookup in arp cache*/
-    struct sr_arpentry *match_arpcache=sr_arpcache_lookup(&sr->cache,ip_dest);
-    if(match_arpcache ==NULL)
-      send_arp_request(sr,if_to_send,ip_dest);
-    else 
-      forward_packet(sr,if_to_send,ip_packet,match_arpcache,len);
+    printf("%d\n",selfcheck );
+    if(selfcheck==1)
+    {
+      if(curr_ip_hdr->ip_p==1)
+        create_and_send_icmp_packet(sr,curr_if,curr_eth_hdr->ether_shost,curr_ip_hdr->ip_src,0,0);
+      else
+        create_and_send_icmp_packet(sr,curr_if,curr_eth_hdr->ether_shost,curr_ip_hdr->ip_src,3,3);
+    }
+    else
+    {
+      /*look up entry by longest prefix match*/
+      struct sr_rt * chosen_entry=LPM_lookup(sr,ip_dest);
+      printf("\n%s\n",chosen_entry->interface);
+      struct sr_if * if_to_send=sr->if_list;
+      while(if_to_send!=NULL)
+      {
+        if (strcmp(if_to_send->name,chosen_entry->interface)==0)
+          break;
+        if_to_send=if_to_send->next;
+      }
+      /*decrease TTL by 1 */
+      curr_ip_hdr->ip_ttl-=1;
+      /*recalculate checksum*/
+      curr_ip_hdr->ip_sum+=1;
+      /*lookup in arp cache*/
+      struct sr_arpentry *match_arpcache=sr_arpcache_lookup(&sr->cache,ip_dest);
+      if(match_arpcache ==NULL)
+      {
+        sr_arpcache_queuereq(&sr->cache,ip_dest,ip_packet,len,if_to_send->name);
+        send_arp_request(sr,if_to_send,ip_dest);
+        
+      }
+      else 
+        forward_packet(sr,if_to_send,ip_packet,match_arpcache->mac,len);
+    }
   }
   else
     printf("corrupt\n");
@@ -142,13 +175,12 @@ void process_ip_packet(struct sr_instance  *sr,void *ip_packet, unsigned int len
 void process_arp_packet(struct sr_instance *sr,void *arp_packet, unsigned int len)
 {
   sr_arp_hdr_t *curr_arp_hdr = (sr_arp_hdr_t *)(arp_packet+sizeof(sr_ethernet_hdr_t));
+  /*if arp request, reply router's mac*/
   if(curr_arp_hdr->ar_op==ntohs(1))
   {
     struct sr_if *if_frame_come_from = sr->if_list;
     while(if_frame_come_from!=NULL)
     {
-    /*printf("%d\n",curr_arp_hdr->ar_tip);
-    /sr_print_if(if_frame_come_from);*/
       if ( curr_arp_hdr->ar_tip == if_frame_come_from->ip)
       {
         reply_arp(sr,arp_packet,len,if_frame_come_from);
@@ -156,13 +188,13 @@ void process_arp_packet(struct sr_instance *sr,void *arp_packet, unsigned int le
       }
       if_frame_come_from=if_frame_come_from->next;
     }
-  /*free(curr_arp_hdr);
-  free(if_frame_come_from);*/
     return;
   }
+  /*else insert to arpcache*/
   else
   {
-    sr_arpcache_insert(&sr->cache,curr_arp_hdr->ar_sha,curr_arp_hdr->ar_sip);
+    struct sr_arpreq * req=sr_arpcache_insert(&sr->cache,curr_arp_hdr->ar_sha,curr_arp_hdr->ar_sip);
+    send_await_packet(sr,req,curr_arp_hdr->ar_sha,len);
   }
 }
 void send_arp_request(struct sr_instance* sr,struct sr_if *if_to_send, uint32_t ip_dest)
@@ -198,6 +230,8 @@ void send_arp_request(struct sr_instance* sr,struct sr_if *if_to_send, uint32_t 
   print_hdrs(arp_frame_to_send,sizeof(sr_ethernet_hdr_t)+sizeof(sr_arp_hdr_t));
 
   int ret_val= sr_send_packet(sr,(uint8_t *)arp_frame_to_send,98,if_to_send->name);
+  if(ret_val<0)
+    fprintf(stderr, "Failed to send\n");
   free(arp_frame_to_send);
   free(eth_header_to_send);
   free(arp_header_to_send);
@@ -234,6 +268,8 @@ void reply_arp(struct sr_instance *sr, void *arp_packet,unsigned int len,struct 
   print_hdrs(arp_frame_to_send,sizeof(sr_ethernet_hdr_t)+sizeof(sr_arp_hdr_t));
 
   int ret_val= sr_send_packet(sr,(uint8_t *)arp_frame_to_send,len,curr_sr_if->name);
+  if(ret_val<0)
+    fprintf(stderr, "Failed to send\n");
   free(arp_frame_to_send);
   free(eth_header_to_send);
   free(arp_header_to_send);
@@ -272,16 +308,115 @@ struct sr_rt * LPM_lookup(struct sr_instance * sr, uint32_t ip_dest)
   }
   return chosen_entry;
 }
-void forward_packet(struct sr_instance* sr,struct sr_if *if_to_send, void* ip_packet,struct sr_arpentry *match_arpcache,unsigned int len)
+void forward_packet(struct sr_instance* sr,struct sr_if *if_to_send, void* ip_packet,unsigned char* mac_addr,unsigned int len)
 {
-  printf("checked\n");
   sr_ethernet_hdr_t *curr_eth_frame=(sr_ethernet_hdr_t *)ip_packet;
   memset(curr_eth_frame->ether_dhost,0,ETHER_ADDR_LEN);
-  memcpy(curr_eth_frame->ether_dhost,match_arpcache->mac,ETHER_ADDR_LEN);
+  memcpy(curr_eth_frame->ether_dhost,mac_addr,ETHER_ADDR_LEN);
   memset(curr_eth_frame->ether_shost,0,ETHER_ADDR_LEN);
   memcpy(curr_eth_frame->ether_shost,if_to_send->addr,ETHER_ADDR_LEN);
   print_hdrs(ip_packet,len);
   int ret_val= sr_send_packet(sr,(uint8_t *)ip_packet,len,if_to_send->name);
   if(ret_val<0)
   fprintf(stderr, "Failed to send\n");
+}
+void handle_arpreq(struct sr_instance *sr,struct sr_arpreq *arp_req)
+{
+  struct sr_if * if_to_send=sr->if_list;
+  while(if_to_send!=NULL)
+  {
+    if (strcmp(if_to_send->name,arp_req->packets->iface)==0)
+      break;
+    if_to_send=if_to_send->next;
+  }
+  time_t curtime=time(NULL);
+  if(difftime(curtime,arp_req->sent)>1.0)
+  {
+    if(arp_req->times_sent>5)
+    {
+      /*send icmp unreachable to all host*/
+    }
+    else
+    {
+      send_arp_request(sr,if_to_send,arp_req->ip);
+      arp_req->sent=time(NULL);
+      arp_req->times_sent++;
+    }
+  }
+}
+void send_await_packet(struct sr_instance *sr,struct sr_arpreq *req,unsigned char *mac,unsigned int len)
+{
+  struct sr_packet *packet_to_send=req->packets;
+  while(packet_to_send!=NULL)
+  {
+    struct sr_if * if_to_send=sr->if_list;
+    while(if_to_send!=NULL)
+    {
+      if (strcmp(if_to_send->name,packet_to_send->iface)==0)
+        break;
+      if_to_send=if_to_send->next;
+    }
+    forward_packet(sr,if_to_send,packet_to_send->buf,mac,len);
+    packet_to_send=packet_to_send->next;
+  }
+}
+
+
+void create_and_send_icmp_packet(struct sr_instance *sr, struct sr_if * if_to_send,unsigned char *dmac,uint32_t ip_dst,uint8_t type,uint8_t code)
+{
+  void * frame_to_send=malloc(98);
+  memset(frame_to_send,0,98);
+  sr_ethernet_hdr_t *eth_header_to_send=(sr_ethernet_hdr_t *) malloc(sizeof(sr_ethernet_hdr_t));
+  memset(eth_header_to_send,0,sizeof(sr_ethernet_hdr_t));
+  sr_ip_hdr_t *ip_hdr_to_send =(sr_ip_hdr_t*)malloc(sizeof(sr_ip_hdr_t));
+  memset(ip_hdr_to_send,0,sizeof(sr_ip_hdr_t));
+  sr_icmp_hdr_t *icmp_hdr_to_send=(sr_icmp_hdr_t *)malloc(sizeof(sr_icmp_hdr_t));
+  memset(icmp_hdr_to_send,0,sizeof(sr_icmp_hdr_t));
+  /*ethernet header*/
+  memcpy(eth_header_to_send->ether_shost,if_to_send->addr,ETHER_ADDR_LEN);
+  memcpy(eth_header_to_send->ether_dhost,dmac,ETHER_ADDR_LEN);
+  eth_header_to_send->ether_type=htons(0x0800);
+  /*ip_header*/
+  ip_hdr_to_send->ip_v=4;
+  ip_hdr_to_send->ip_hl=5;
+  ip_hdr_to_send->ip_tos=0;
+  ip_hdr_to_send->ip_len=htons(84);
+  ip_hdr_to_send->ip_id=htons(41806);
+  ip_hdr_to_send->ip_off=htons(0);
+  ip_hdr_to_send->ip_ttl=64;
+  ip_hdr_to_send->ip_p=1;
+  ip_hdr_to_send->ip_sum=htons(0);
+  ip_hdr_to_send->ip_src=if_to_send->ip;
+  ip_hdr_to_send->ip_dst=ip_dst;
+
+  uint16_t *arr=malloc(sizeof(sr_ip_hdr_t));
+  memcpy(arr,ip_hdr_to_send,sizeof(sr_ip_hdr_t));
+  int i;
+  uint32_t compute_sum=0;
+  for (i=0;i<10;i++)
+  {
+    compute_sum+=ntohs(arr[i]);
+  }
+  free(arr);
+  uint16_t carry=compute_sum>>16;
+  ip_hdr_to_send->ip_sum=htons(~(compute_sum+carry));
+  /*icmp header*/
+  icmp_hdr_to_send->icmp_type =type;
+  icmp_hdr_to_send->icmp_code =code;
+  icmp_hdr_to_send->icmp_sum =htons(0);
+
+  uint16_t *arr1=malloc(sizeof(sr_icmp_hdr_t));
+  memcpy(arr1,icmp_hdr_to_send,sizeof(sr_icmp_hdr_t));
+  icmp_hdr_to_send->icmp_sum=htons(~(arr1[0]));
+  free(arr1);
+
+  memcpy(frame_to_send,(void *)eth_header_to_send,sizeof(sr_ethernet_hdr_t));
+  memcpy(frame_to_send+sizeof(sr_ethernet_hdr_t),(void *)ip_hdr_to_send,sizeof(sr_ip_hdr_t));
+  memcpy(frame_to_send+sizeof(sr_ethernet_hdr_t)+sizeof(sr_ip_hdr_t),(void *)icmp_hdr_to_send,sizeof(sr_icmp_hdr_t));
+  print_hdrs(frame_to_send,sizeof(sr_ethernet_hdr_t)+sizeof(sr_ip_hdr_t)+sizeof(sr_icmp_hdr_t));
+  sr_send_packet(sr,(uint8_t *)frame_to_send,98,if_to_send->name);
+  free(frame_to_send);
+  free(eth_header_to_send);
+  free(ip_hdr_to_send);
+  free(icmp_hdr_to_send);
 }
